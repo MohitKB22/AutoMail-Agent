@@ -20,34 +20,6 @@ An AI agent that reads emails, detects intent, drafts replies, and routes approv
 | Backend API | FastAPI |
 | Runtime | Python 3.10+ |
 
-## 🚀 Quick Start
-
-### 1. Install dependencies
-```bash
-pip install -r requirements.txt
-```
-
-### 2. Set your API key
-```bash
-cp .env.example .env
-# Edit .env and add your Anthropic API key
-```
-
-### 3. Run the Streamlit app (recommended)
-```bash
-streamlit run app.py
-```
-
-### 4. (Optional) Run the FastAPI backend
-```bash
-python api.py
-# API docs at: http://localhost:8000/docs
-```
-
-### 5. (Optional) Run the CLI agent directly
-```bash
-ANTHROPIC_API_KEY=sk-ant-... python agent.py
-```
 
 ## 📁 Project Structure
 
