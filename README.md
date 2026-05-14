@@ -15,7 +15,6 @@ An AI agent that reads emails, detects intent, drafts replies, and routes approv
 
 | Layer | Technology |
 |-------|-----------|
-| AI    | Claude (claude-sonnet-4-20250514) |
 | Frontend | Streamlit |
 | Backend API | FastAPI |
 | Runtime | Python 3.10+ |
@@ -30,22 +29,7 @@ email-agent/
 ├── api.py           # FastAPI REST backend
 ├── requirements.txt
 └── .env.example
-```
 
-## 🔄 Pipeline Flow
-
-```
-Email Input
-    ↓
-[Step 1] Intent Detection via Claude
-    ↓ intent + sentiment + confidence
-[Step 2] Reply Drafting via Claude
-    ↓ professional reply draft
-[Step 3] Routing Engine
-    ↓ team + priority assignment
-[Step 4] Approval Gate
-    → Auto-approved (low-risk intents)
-    → Human review required (complaints, urgent, etc.)
 ```
 
 ## 🎯 Intent → Routing Map
