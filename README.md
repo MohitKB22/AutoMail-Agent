@@ -1,4 +1,4 @@
-# 🤖 MailPilot AI — Autonomous Email Intelligence Agent
+# 🤖 Autonomous Email Intelligence Agent
 
 > An AI-powered email operations agent that understands incoming emails, detects intent and sentiment, drafts contextual replies, routes conversations to the right teams, and safely manages approval workflows.
 
