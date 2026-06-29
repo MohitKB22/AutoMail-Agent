@@ -1,121 +1,96 @@
 # 🤖 Autonomous Email Intelligence Agent
 
-> An AI-powered email operations agent that understands incoming emails, detects intent and sentiment, drafts contextual replies, routes conversations to the right teams, and safely manages approval workflows.
+An AI agent that reads emails, detects intent, drafts replies, and routes approvals safely — with an OpenAI-compatible backend (works with OpenAI, Groq, OpenRouter, Together, Ollama, etc.).
 
-Built using **Python**, **FastAPI**, and **Streamlit**, this project demonstrates how modern LLM-powered systems can automate inbox operations while keeping humans in control for sensitive communication.
+## ✨ Features
 
----
+- **Intent Detection** — Classifies emails into 8 categories (meeting, complaint, sales, spam, etc.)
+- **Sentiment Analysis** — Positive / neutral / negative / urgent
+- **Smart Reply Drafting** — Context-aware, professional replies, editable and regeneratable in-place
+- **Auto-Routing** — Routes to the right team based on intent
+- **Approval Flow** — Risky emails (complaints, urgent) require human review, with one-click approve/reject (single or bulk) and an "undo" back to review
+- **🧪 Demo Mode** — Try the entire app with a local rule-based simulator, no API key required
+- **Bulk Processing** — Run the built-in sample batch or upload your own CSV of emails (with a downloadable template)
+- **Analytics Dashboard** — KPI cards, intent/sentiment/priority charts, search + filters, sort, and JSON/CSV export of the full audit trail
+- **Connection Tools** — Provider presets (OpenAI/Groq/OpenRouter/Together/Ollama), a "Test connection" check, and friendly, actionable error messages
+- **Light/Dark Theme** — Toggle in the sidebar
+- **Beautiful Dashboard** — Streamlit UI with a live, step-by-step processing log for every run
 
-# ✨ Features
+## 🛠️ Tech Stack
 
-## 🧠 Intelligent Email Understanding
-The agent analyzes incoming emails and extracts:
+| Layer | Technology |
+|-------|-----------|
+| AI    | Any OpenAI-compatible model (OpenAI, Groq, OpenRouter, Together, Ollama, ...) |
+| Frontend | Streamlit |
+| Backend API | FastAPI |
+| Runtime | Python 3.10+ |
 
-- Intent classification
-- Sentiment detection
-- Urgency level
-- Confidence score
-- Suggested routing team
+## 🚀 Quick Start
 
-Supported intents include:
+### 1. Install dependencies
+```bash
+pip install -r requirements.txt
+```
 
-- Meeting requests
-- Support requests
-- Complaints
-- Sales inquiries
-- Follow-ups
-- Information requests
-- Urgent escalations
-- Spam detection
+### 2. Run the Streamlit dashboard (recommended)
+```bash
+streamlit run app.py
+```
+Flip on **🧪 Demo Mode** in the sidebar to try every feature instantly with no API key — it simulates the pipeline locally. Turn it off and enter a key + base URL + model in the sidebar to use a real provider (with a one-click "Test connection" check).
 
----
+### 3. (Optional) Run the FastAPI backend
+```bash
+python api.py
+# API docs at: http://localhost:8000/docs
+```
 
-## 💬 Smart Reply Generation
-The AI drafts professional, context-aware responses automatically.
+### 4. (Optional) Run the CLI agent directly
+```bash
+API_KEY=sk-... BASE_URL=https://api.openai.com/v1 MODEL=gpt-4o-mini python agent.py
+```
 
-Examples:
-- Customer support acknowledgments
-- Meeting confirmations
-- Sales inquiry replies
-- Complaint handling drafts
-- Escalation notices
+## 📁 Project Structure
 
----
+```
+email-agent/
+├── app.py           # Streamlit dashboard (main interface)
+├── agent.py         # Core AI pipeline (analyze → draft → route)
+├── api.py           # FastAPI REST backend
+└── requirements.txt
+```
 
-## 🔀 Automated Routing Engine
-Based on email intent, the system routes conversations to the correct internal team.
+## 🔄 Pipeline Flow
 
-| Intent | Team | Priority |
-|--------|------|----------|
-| Meeting Request | Calendar/Admin | Medium |
-| Support Request | Support Team | High |
-| Sales Inquiry | Sales Team | Medium |
-| Complaint | Customer Success | Urgent |
-| Follow Up | Original Handler | Low |
-| Information Request | General Queue | Low |
-| Urgent | Management | Urgent |
-| Spam | Ignored | None |
+```
+Email Input
+    ↓
+[Step 1] Intent Detection (real model, or simulated locally in Demo Mode)
+    ↓ intent + sentiment + confidence
+[Step 2] Reply Drafting — editable & regeneratable
+    ↓ professional reply draft
+[Step 3] Routing Engine
+    ↓ team + priority assignment
+[Step 4] Approval Gate
+    → Auto-approved (low-risk intents)
+    → Human review required (complaints, urgent, etc.) — approve, reject, or send back to review
+```
 
----
+## 🎯 Intent → Routing Map
 
-## 🔐 Human-in-the-Loop Approval Flow
-Sensitive emails are never auto-approved.
+| Intent | Team | Priority | Auto-approve |
+|--------|------|----------|--------------|
+| meeting_request | Calendar/Admin | medium | ✅ Yes |
+| support_request | Support Team | high | ❌ No |
+| sales_inquiry | Sales Team | medium | ✅ Yes |
+| complaint | Customer Success | urgent | ❌ No |
+| follow_up | Original Handler | low | ✅ Yes |
+| information_request | General | low | ✅ Yes |
+| urgent | Management | urgent | ❌ No |
+| spam | None | none | ✅ Yes |
 
-The system automatically flags:
-- Complaints
-- Urgent escalations
-- Negative sentiment emails
-- Low-confidence AI predictions
+## 🔐 Responsible AI Design
 
-This ensures:
-- Responsible AI behavior
-- Safer automation
-- Reduced hallucination risks
-- Human oversight where necessary
-
----
-
-## 📊 Interactive Dashboard
-Built with Streamlit for real-time visibility into:
-
-- Email processing pipeline
-- Intent predictions
-- Confidence scores
-- Draft replies
-- Routing decisions
-- Approval status
-
----
-
-# 🏗️ Architecture
-
-```text
-                ┌─────────────────┐
-                │ Incoming Email  │
-                └────────┬────────┘
-                         │
-                         ▼
-              ┌───────────────────┐
-              │ Intent Detection  │
-              └────────┬──────────┘
-                       │
-                       ▼
-              ┌───────────────────┐
-              │ Sentiment Analysis│
-              └────────┬──────────┘
-                       │
-                       ▼
-              ┌───────────────────┐
-              │ Reply Generation  │
-              └────────┬──────────┘
-                       │
-                       ▼
-              ┌───────────────────┐
-              │ Routing Engine    │
-              └────────┬──────────┘
-                       │
-             ┌─────────┴─────────┐
-             ▼                   ▼
-      Auto Approved       Human Approval
-
-      
+- **No auto-send**: Drafts are always surfaced for human review before sending
+- **Confidence scores**: Agent reports its certainty on every classification
+- **Escalation paths**: Complaints and urgent emails always require human approval
+- **Audit trail**: Full processing log stored per email
