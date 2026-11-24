@@ -1,6 +1,6 @@
 # 🤖 Autonomous Email Intelligence Agent
 
-**🔗 Live demo:** LIVE_URL_PLACEHOLDER — opens in 🧪 Demo Mode, no API key needed. *(Free Render instance: the first load after a while can take ~30–60 s to wake up.)*
+**🔗 Live demo:** https://automail-agent.onrender.com — opens in 🧪 Demo Mode, no API key needed. *(Free Render instance: the first load after a while can take ~30–60 s to wake up.)*
 
 An AI agent that reads emails, detects intent, drafts replies, and routes approvals safely — with an OpenAI-compatible backend (works with OpenAI, Groq, OpenRouter, Together, Ollama, etc.).
 
