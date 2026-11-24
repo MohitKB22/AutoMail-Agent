@@ -1,17 +1,35 @@
 """
 Autonomous Email Intelligence Agent — Streamlit Dashboard
 Works with ANY OpenAI-compatible provider (OpenAI, Groq, OpenRouter, Together, Ollama, ...).
+
+The analysis / drafting / routing logic and the Demo Mode simulator live in
+agent.py and are shared with the CLI and the FastAPI backend.
 """
 
 import csv
+import html
 import io
 import json
 import re
 import uuid
 from datetime import datetime
 
+import altair as alt
+import pandas as pd
 import streamlit as st
 from openai import OpenAI
+
+from agent import (
+    INTENT_CATEGORIES,
+    SAMPLE_EMAILS,
+    SENTIMENTS,
+    analyze_email,
+    draft_reply,
+    mock_analyze,
+    mock_draft_reply,
+    normalize_intent,
+    route_email,
+)
 
 st.set_page_config(
     page_title="Email Intelligence Agent",
@@ -21,6 +39,9 @@ st.set_page_config(
 )
 
 # ── Design tokens ────────────────────────────────────────────────────────────
+# The dark palette mirrors .streamlit/config.toml (Streamlit's native theme), so
+# native widgets and the custom HTML cards always match. Light mode re-skins the
+# native widgets from these tokens via CSS (see LIGHT_OVERRIDES below).
 THEMES = {
     "dark": dict(
         bg="#0a0a0f", surface="#111118", surface2="#0d1117",
@@ -38,10 +59,67 @@ THEMES = {
     ),
 }
 
+# Streamlit's own theme can't be switched per session from Python, so in light
+# mode we override the native widgets (which follow the dark base theme).
+LIGHT_OVERRIDES = """
+.stApp, section[data-testid="stSidebar"] { color: var(--text); }
+header[data-testid="stHeader"] { background: var(--bg) !important; }
+header[data-testid="stHeader"] :is(button, a, span, svg) { color: var(--text-muted) !important; }
+section[data-testid="stSidebar"], section[data-testid="stSidebar"] > div { background: var(--surface2) !important; }
+.stApp :is(h1, h2, h3, h4, h5, h6):not([style]) { color: var(--text) !important; }
+.stApp :is([data-testid="stMarkdownContainer"], [data-testid="stWidgetLabel"], [data-testid="stText"],
+           [data-testid="stCheckbox"], [data-testid="stRadio"], label) { color: var(--text); }
+.stApp :is([data-testid="stWidgetLabel"], label) :is(p, span, div) { color: var(--text); }
+.stApp [data-testid="stCaptionContainer"], .stApp [data-testid="stCaptionContainer"] * { color: var(--text-muted) !important; }
+.stApp [data-testid="stTooltipIcon"] svg, .stApp [data-testid="stTooltipHoverTarget"] svg { color: var(--text-dim) !important; stroke: var(--text-dim); }
+.stApp [data-baseweb="tab-list"] [role="tab"]:not([aria-selected="true"]) p { color: var(--text-muted) !important; }
+.stApp [data-baseweb="tab-border"] { background: var(--border) !important; }
+.stApp :is([data-baseweb="input"], [data-baseweb="base-input"], [data-baseweb="textarea"], [data-baseweb="select"] > div,
+           [data-testid="stTextInputRootElement"], [data-testid="stTextAreaRootElement"],
+           [data-testid="stSelectbox"] [role="group"], [data-testid="stMultiSelect"] [role="group"]) {
+    background-color: var(--surface) !important; border-color: var(--border) !important;
+}
+.stApp :is(input, textarea) { color: var(--text) !important; -webkit-text-fill-color: var(--text) !important; caret-color: var(--text); }
+.stApp :is(input, textarea)::placeholder { color: var(--text-dim) !important; -webkit-text-fill-color: var(--text-dim) !important; }
+.stApp :is(input, textarea):disabled { color: var(--text-dim) !important; -webkit-text-fill-color: var(--text-dim) !important; }
+.stApp [data-baseweb="select"] :is(div, span, svg) { color: var(--text) !important; }
+.stApp [data-baseweb="tag"] { background: var(--surface2) !important; }
+.stApp :is(input, textarea) ~ div button svg, .stApp [data-testid="stNumberInput"] button { color: var(--text-muted) !important; }
+.stApp :is(button[data-testid="stBaseButton-secondary"], button[data-testid="stBaseButton-tertiary"],
+           [data-testid="stPopover"] button, [data-testid="stDownloadButton"] button,
+           [data-testid="stFileUploaderDropzone"] button) {
+    background: var(--surface) !important; color: var(--text) !important; border-color: var(--border) !important;
+}
+.stApp :is(button[data-testid="stBaseButton-secondary"], [data-testid="stDownloadButton"] button):disabled { color: var(--text-dim) !important; opacity: .7; }
+.stApp [data-testid="stFileUploaderDropzone"] { background: var(--surface) !important; border: 1px dashed var(--border) !important; }
+.stApp [data-testid="stFileUploaderDropzone"] *, .stApp [data-testid="stFileUploaderFile"] * { color: var(--text-muted) !important; }
+.stApp [data-testid="stFileChip"] { background: var(--surface2) !important; border: 1px solid var(--border); }
+.stApp [data-testid="stFileChip"] > div:first-child { background: var(--border) !important; }
+.stApp [data-testid="stRadioOption"]:not([data-selected="true"]) > div:first-child,
+.stApp [data-testid="stRadioOption"]:not([data-selected="true"]) > * > div:first-child { background: var(--surface) !important; }
+.stApp [data-testid="stExpander"] details { background: var(--surface) !important; border-color: var(--border) !important; }
+.stApp [data-testid="stExpander"] summary, .stApp [data-testid="stExpander"] summary * { color: var(--text) !important; }
+.stApp [data-testid="stExpander"] summary { background: var(--surface) !important; }
+.stApp [data-testid="stExpander"] summary:hover { background: var(--surface2) !important; }
+.stApp :is([data-testid="stCode"], [data-testid="stCodeBlock"]) :is(pre, code) { background: var(--surface2) !important; color: var(--code-text) !important; }
+.stApp [data-testid="stAlertContainer"] :is(p, div, span) { color: var(--text) !important; }
+.stApp [data-testid="stProgress"] > div > div { background: var(--border) !important; }
+.stApp [data-testid="stElementToolbarButtonContainer"] { background: var(--surface) !important; }
+.stApp [data-testid="stElementToolbarButtonContainer"] :is(button, svg) { color: var(--text-muted) !important; }
+.stApp hr { border-color: var(--border) !important; background: var(--border) !important; }
+div[data-baseweb="popover"] :is(ul, [role="listbox"], [data-testid="stPopoverBody"]),
+div[data-testid="stPopoverBody"], [role="listbox"] { background: var(--surface) !important; color: var(--text) !important; }
+div[data-baseweb="popover"] :is(li, li *, p, span), [role="listbox"] [role="option"], [role="listbox"] [role="option"] *,
+div[data-testid="stPopoverBody"] :is(p, span) { color: var(--text) !important; }
+div[data-baseweb="popover"] li:hover, div[data-baseweb="popover"] li[aria-selected="true"],
+[role="listbox"] [role="option"]:is(:hover, [data-focused], [aria-selected="true"]) { background: var(--surface2) !important; }
+"""
+
 
 def inject_css(theme_name: str) -> None:
     t = THEMES.get(theme_name, THEMES["dark"])
     css_vars = "\n".join(f"  --{k.replace('_', '-')}: {v};" for k, v in t.items())
+    overrides = LIGHT_OVERRIDES if theme_name == "light" else ""
     st.markdown(
         f"""
 <style>
@@ -52,7 +130,7 @@ def inject_css(theme_name: str) -> None:
 html, body, [class*="css"] {{ font-family: 'Syne', sans-serif; }}
 .stApp {{ background: var(--bg); }}
 h1, h2, h3 {{ font-family: 'Syne', sans-serif !important; }}
-
+{overrides}
 .email-card {{
     background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--border);
     border-radius: 12px; padding: 20px; margin: 10px 0; transition: box-shadow .15s ease;
@@ -65,11 +143,11 @@ h1, h2, h3 {{ font-family: 'Syne', sans-serif !important; }}
 .email-card.priority-border-none {{ border-left-color: #6b7280; }}
 
 .card-top {{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; }}
-.card-row {{ color:var(--text-muted); margin:8px 0 0; font-size:13px; display:flex; justify-content:space-between; gap:8px; }}
-.card-row b, .card-row span {{ color:var(--text); }}
-.card-hr {{ border-color:var(--border); margin:12px 0; }}
-.card-label {{ color:var(--text-dim); font-size:11px; letter-spacing:.08em; margin-bottom:4px; text-transform:uppercase; }}
-.card-summary {{ color:var(--code-text); font-size:14px; margin:0; line-height:1.5; }}
+.stApp .card-row {{ color:var(--text-muted); margin:8px 0 0; font-size:13px; display:flex; justify-content:space-between; gap:8px; }}
+.stApp .card-row b, .stApp .card-row .card-val {{ color:var(--text); }}
+.card-hr {{ border:none; border-top:1px solid var(--border); margin:12px 0; }}
+.stApp .card-label {{ color:var(--text-dim); font-size:11px; letter-spacing:.08em; margin-bottom:4px; text-transform:uppercase; }}
+.stApp .card-summary {{ color:var(--code-text); font-size:14px; margin:0; line-height:1.5; overflow-wrap:anywhere; }}
 .entity-row {{ margin-top:10px; display:flex; flex-wrap:wrap; gap:6px; }}
 .entity-chip {{ font-size:11px; padding:3px 9px; border-radius:8px; background:var(--surface2); border:1px solid var(--border2); color:var(--text-muted); font-family:'JetBrains Mono',monospace; }}
 .sim-tag {{ font-size:10px; padding:2px 8px; border-radius:10px; background:rgba(192,132,252,0.15); color:var(--accent2); font-family:'JetBrains Mono',monospace; letter-spacing:.05em; }}
@@ -87,20 +165,20 @@ h1, h2, h3 {{ font-family: 'Syne', sans-serif !important; }}
 .badge-urgent {{ background:#3b1f1f; color:#ef4444; }}
 .badge-spam {{ background:#1f1f1f; color:#9ca3af; }}
 
-.priority-urgent {{ color:#ef4444; font-weight:600; }}
-.priority-high {{ color:#f97316; font-weight:600; }}
-.priority-medium {{ color:#eab308; font-weight:600; }}
-.priority-low {{ color:#22c55e; font-weight:600; }}
-.priority-none {{ color:#6b7280; font-weight:600; }}
+.stApp .priority-urgent {{ color:#ef4444; font-weight:600; }}
+.stApp .priority-high {{ color:#f97316; font-weight:600; }}
+.stApp .priority-medium {{ color:#ca8a04; font-weight:600; }}
+.stApp .priority-low {{ color:#16a34a; font-weight:600; }}
+.stApp .priority-none {{ color:#6b7280; font-weight:600; }}
 
-.status-auto-approved {{ color:#4ade80; font-weight:600; }}
-.status-pending-human-review {{ color:#fbbf24; font-weight:600; }}
-.status-approved {{ color:#34d399; font-weight:600; }}
-.status-rejected {{ color:#f87171; font-weight:600; }}
+.stApp .status-auto-approved {{ color:#22c55e; font-weight:600; }}
+.stApp .status-pending-human-review {{ color:#f59e0b; font-weight:600; }}
+.stApp .status-approved {{ color:#10b981; font-weight:600; }}
+.stApp .status-rejected {{ color:#ef4444; font-weight:600; }}
 
 .metric-card {{ background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:18px; text-align:center; }}
 .metric-value {{ font-size:30px; font-weight:800; }}
-.metric-label {{ font-size:11px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.1em; margin-top:2px; }}
+.stApp .metric-label {{ font-size:11px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.1em; margin-top:2px; }}
 
 .status-chip {{
     display:inline-block; padding:4px 12px; border-radius:8px; font-size:12px;
@@ -108,10 +186,11 @@ h1, h2, h3 {{ font-family: 'Syne', sans-serif !important; }}
 }}
 
 div[data-testid="stCodeBlock"] pre {{ font-size: 13px !important; }}
-button[kind="primary"], button[data-testid="stBaseButton-primary"] {{
+.stApp button[kind="primary"], .stApp button[data-testid="stBaseButton-primary"] {{
     background: linear-gradient(135deg, var(--accent1), var(--accent2)) !important;
-    border: none !important;
+    border: none !important; color: #ffffff !important;
 }}
+.stApp button[data-testid="stBaseButton-primary"]:disabled {{ opacity: .45; }}
 section[data-testid="stSidebar"] {{ border-right: 1px solid var(--border); }}
 </style>
 """,
@@ -120,16 +199,7 @@ section[data-testid="stSidebar"] {{ border-right: 1px solid var(--border); }}
 
 
 # ── Domain constants ─────────────────────────────────────────────────────────
-INTENT_CATEGORIES = {
-    "meeting_request": "Schedule or reschedule a meeting",
-    "support_request": "Technical or customer support needed",
-    "sales_inquiry": "Potential sales lead or product question",
-    "complaint": "Customer complaint requiring escalation",
-    "follow_up": "Follow-up on previous conversation",
-    "information_request": "Requesting information or documentation",
-    "urgent": "Time-sensitive matter",
-    "spam": "Unsolicited or irrelevant email",
-}
+# Same routing table as agent.ROUTING_RULES, with icons for display.
 ROUTING_RULES = {
     "meeting_request": {"team": "📅 Calendar/Admin", "auto_approve": True, "priority": "medium"},
     "support_request": {"team": "🛠️ Support Team", "auto_approve": False, "priority": "high"},
@@ -140,16 +210,8 @@ ROUTING_RULES = {
     "urgent": {"team": "⚡ Management", "auto_approve": False, "priority": "urgent"},
     "spam": {"team": "🗑️ None", "auto_approve": True, "priority": "none"},
 }
-SAMPLE_EMAILS = [
-    {"from": "sarah.chen@techcorp.com", "subject": "Quick sync this week?",
-     "body": "Hi, I'd love to schedule a 30-minute call to discuss the Q2 roadmap alignment. Are you available Thursday or Friday afternoon?"},
-    {"from": "angry.customer@gmail.com", "subject": "STILL no resolution after 2 weeks!!!",
-     "body": "This is absolutely unacceptable. I've been waiting 2 weeks for a refund on order #78432 and nobody has gotten back to me. I will be disputing this charge with my bank if this isn't resolved TODAY."},
-    {"from": "john.smith@startup.io", "subject": "Interested in your enterprise plan",
-     "body": "Hello, we're a 50-person startup evaluating tools for our engineering team. Could you send over pricing for your enterprise tier? We're also curious about SSO and SLA guarantees."},
-    {"from": "noreply@newsletters.biz", "subject": "🔥 HOT DEALS This Week Only!!!",
-     "body": "You've been selected for our EXCLUSIVE offer! Click here to claim your FREE gift. Limited time only."},
-]
+PRIORITIES = ["urgent", "high", "medium", "low", "none"]
+STATUSES = ["auto-approved", "pending-human-review", "approved", "rejected"]
 PROVIDER_PRESETS = {
     "OpenAI": {"base_url": "https://api.openai.com/v1", "models": ["gpt-4o-mini", "gpt-4o"]},
     "Groq": {"base_url": "https://api.groq.com/openai/v1", "models": ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]},
@@ -157,16 +219,6 @@ PROVIDER_PRESETS = {
     "Together AI": {"base_url": "https://api.together.xyz/v1", "models": ["meta-llama/Llama-3.3-70B-Instruct-Turbo"]},
     "Ollama (local)": {"base_url": "http://localhost:11434/v1", "models": ["llama3"]},
     "Custom": {"base_url": "", "models": []},
-}
-MOCK_TEMPLATES = {
-    "meeting_request": "Hi,\n\nThanks for reaching out — happy to find time this week. {team} will follow up shortly with a couple of slots that work.\n\nBest,\nThe Team",
-    "support_request": "Hi,\n\nThanks for flagging this. I've routed your message to {team} so we can dig into it properly — you'll hear back shortly with next steps.\n\nBest,\nThe Team",
-    "sales_inquiry": "Hi,\n\nThanks for your interest! I've looped in {team}, who'll follow up with pricing details and answers to your questions.\n\nBest,\nThe Team",
-    "complaint": "Hi,\n\nI'm sorry for the trouble this has caused — that's not the experience we want for you. I've escalated this to {team} for immediate attention.\n\nBest,\nThe Team",
-    "follow_up": "Hi,\n\nThanks for checking in! {team} has this on file and will get back to you shortly with an update.\n\nBest,\nThe Team",
-    "information_request": "Hi,\n\nThanks for reaching out. {team} has received your request and will send over the information shortly.\n\nBest,\nThe Team",
-    "urgent": "Hi,\n\nThank you for flagging this as urgent. I've escalated it directly to {team} for immediate review.\n\nBest,\nThe Team",
-    "spam": "Unsubscribe acknowledged — you won't hear from this list again.",
 }
 
 
@@ -195,156 +247,30 @@ _DEFAULTS = {
     "compose_from": "",
     "compose_subject": "",
     "compose_body": "",
-    "compose_file_loaded": None,
 }
 for _k, _v in _DEFAULTS.items():
     if _k not in st.session_state:
         st.session_state[_k] = _v
 
 
-# ── AI helpers (real provider) ───────────────────────────────────────────────
+# ── Pipeline orchestration ───────────────────────────────────────────────────
 def make_client(api_key: str, base_url: str) -> OpenAI:
     return OpenAI(api_key=api_key or "none", base_url=base_url)
 
 
-def _chat(client, model, system, user, max_tokens=600):
-    resp = client.chat.completions.create(
-        model=model, max_tokens=max_tokens,
-        messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-    )
-    return resp.choices[0].message.content.strip()
-
-
-def analyze_email(client, model, email):
-    system = "You are an email intelligence system. Respond with valid JSON only — no markdown, no backticks."
-    user = f"""Return a JSON object with exactly these fields:
-{{
-  "intent": "<meeting_request|support_request|sales_inquiry|complaint|follow_up|information_request|urgent|spam>",
-  "sentiment": "<positive|neutral|negative|urgent>",
-  "summary": "<1-2 sentence summary>",
-  "key_entities": ["<extracted names/companies/dates>"],
-  "requires_human_approval": <true|false>,
-  "confidence": <0.0-1.0>
-}}
-EMAIL:
-From: {email['from']}
-Subject: {email['subject']}
-Body: {email['body']}"""
-    raw = _chat(client, model, system, user, 500)
-    if "```" in raw:
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-        raw = raw.split("```")[0]
-    return json.loads(raw.strip())
-
-
-def draft_reply(client, model, email, analysis):
-    routing = ROUTING_RULES.get(analysis["intent"], {})
-    system = "You are a professional email assistant. Write concise, warm, human-sounding replies."
-    user = f"""Draft a reply. Rules: under 150 words, warm & professional, sign as "The Team", no placeholders.
-If spam: one polite unsubscribe-acknowledged line only.
-EMAIL — From: {email['from']} | Subject: {email['subject']}
-Body: {email['body']}
-CONTEXT — Intent: {analysis['intent']} | Sentiment: {analysis['sentiment']} | Team: {routing.get('team', 'General')}"""
-    return _chat(client, model, system, user, 400)
-
-
-def route_email(analysis):
-    intent = analysis.get("intent", "information_request")
-    routing = dict(ROUTING_RULES.get(intent, ROUTING_RULES["information_request"]))
-    if analysis.get("requires_human_approval"):
-        routing["auto_approve"] = False
-    routing["approval_status"] = "auto-approved" if routing["auto_approve"] else "pending-human-review"
-    return routing
-
-
-# ── Mock / offline pipeline (no API key required) ────────────────────────────
-_NEG = ("unacceptable", "angry", "frustrat", "disappoint", "refund", "complain", "terrible",
-        "worst", "awful", "never again", "disputing", "cancel")
-_URGENT = ("urgent", "asap", "immediately", "right away", "emergency", "critical", "today")
-_MEETING = ("meeting", "call", "sync", "schedule", "calendar", "available", "availability", "catch up")
-_SALES = ("pricing", "price", "quote", "enterprise", "plan", "demo", "trial", "interested in", "purchase", "sla", "sso")
-_SUPPORT = ("bug", "error", "issue", "not working", "broken", "help", "support", "crash", "trouble")
-_SPAM = ("unsubscribe", "free gift", "click here", "exclusive offer", "winner", "congratulations", "limited time", "% off")
-_FOLLOWUP = ("following up", "follow up", "just checking", "circling back", "any update", "touching base")
-
-
-def mock_analyze(email):
-    text = f"{email.get('subject', '')} {email.get('body', '')}".lower()
-
-    def hits(words):
-        return sum(1 for w in words if w in text)
-
-    scores = {
-        "complaint": hits(_NEG) * 2,
-        "urgent": hits(_URGENT) * 2,
-        "meeting_request": hits(_MEETING),
-        "sales_inquiry": hits(_SALES),
-        "support_request": hits(_SUPPORT),
-        "spam": hits(_SPAM) * 2,
-        "follow_up": hits(_FOLLOWUP) * 2,
-    }
-    bang = text.count("!")
-    subj = email.get("subject", "")
-    caps_ratio = sum(1 for c in subj if c.isupper()) / max(len(subj), 1)
-    if bang >= 2:
-        scores["urgent"] += 1
-        scores["complaint"] += 1
-    if caps_ratio > 0.3:
-        scores["spam"] += 1
-
-    intent = max(scores, key=scores.get) if max(scores.values(), default=0) > 0 else "information_request"
-
-    if scores.get("complaint", 0) >= 2:
-        sentiment = "negative"
-    elif intent == "urgent":
-        sentiment = "urgent"
-    elif bang >= 2 or hits(_NEG):
-        sentiment = "negative"
-    elif any(w in text for w in ("thanks", "great", "appreciate", "looking forward")):
-        sentiment = "positive"
-    else:
-        sentiment = "neutral"
-
-    raw_entities = re.findall(r"#\d+|\b[A-Z][a-zA-Z]{2,}(?:\s[A-Z][a-zA-Z]{2,})?\b",
-                               f"{email.get('subject', '')} {email.get('body', '')}")
-    entities = list(dict.fromkeys(raw_entities))[:6]
-
-    body = (email.get("body", "") or "").strip().replace("\n", " ")
-    summary = (body[:140] + "…") if len(body) > 140 else body
-
-    return {
-        "intent": intent,
-        "sentiment": sentiment,
-        "summary": summary or "No content provided.",
-        "key_entities": entities,
-        "requires_human_approval": intent in ("complaint", "urgent", "support_request"),
-        "confidence": round(0.74 + (hash(text) % 21) / 100, 2),
-    }
-
-
-def mock_draft_reply(email, analysis):
-    intent = analysis.get("intent", "information_request")
-    team = ROUTING_RULES.get(intent, {}).get("team", "our team")
-    template = MOCK_TEMPLATES.get(intent, MOCK_TEMPLATES["information_request"])
-    return template.format(team=team)
-
-
-# ── Shared pipeline orchestration ────────────────────────────────────────────
 def friendly_error(e: Exception) -> str:
     msg = str(e)
     low = msg.lower()
-    if "401" in msg or "authentic" in low or "api key" in low:
+    if isinstance(e, json.JSONDecodeError) or "json" in low:
+        return "🧩 The model didn't return valid JSON — try a different or larger model."
+    if "401" in msg or "authentic" in low or "api key" in low or "api_key" in low:
         return "🔑 Authentication failed — double-check your API key in the sidebar."
     if "404" in msg or "model_not_found" in low or "does not exist" in low:
         return "🤖 Model not found — check the model name for this provider."
-    if "connect" in low or "timed out" in low or "timeout" in low or "name resolution" in low:
-        return "🌐 Couldn't reach the provider — check the Base URL and your network."
-    if "json" in low or isinstance(e, json.JSONDecodeError):
-        return "🧩 The model didn't return valid JSON — try a different or larger model."
     if "429" in msg or "rate limit" in low:
         return "⏳ Rate limited by the provider — wait a moment and try again."
+    if "connect" in low or "timed out" in low or "timeout" in low or "name resolution" in low:
+        return "🌐 Couldn't reach the provider — check the Base URL and your network."
     return f"⚠️ {msg}"
 
 
@@ -353,17 +279,17 @@ def process_full(client, model, email, mock=False, expanded=True):
     with st.status("Processing email…", expanded=expanded) as status:
         try:
             st.write("🔍 Analyzing intent & sentiment…")
-            analysis = mock_analyze(email) if mock else analyze_email(client, model, email)
+            analysis = mock_analyze(email) if mock else analyze_email(email, client=client, model=model)
             result["analysis"] = analysis
             st.write(f"→ **{analysis['intent'].replace('_', ' ')}** · {analysis['sentiment']} · {analysis['confidence']:.0%} confidence")
 
             st.write("✍️ Drafting reply…")
-            draft = mock_draft_reply(email, analysis) if mock else draft_reply(client, model, email, analysis)
+            draft = mock_draft_reply(email, analysis) if mock else draft_reply(email, analysis, client=client, model=model)
             result["draft"] = draft
             st.write(f"→ {len(draft.split())} words drafted")
 
             st.write("🔀 Routing & queueing…")
-            routing = route_email(analysis)
+            routing = route_email(analysis, rules=ROUTING_RULES)
             result["routing"] = routing
             st.write(f"→ {routing['team']} · priority **{routing['priority']}** · {routing['approval_status']}")
 
@@ -376,11 +302,13 @@ def process_full(client, model, email, mock=False, expanded=True):
 
 
 def parse_email_csv(uploaded_file):
-    text = uploaded_file.getvalue().decode("utf-8", errors="ignore")
+    # utf-8-sig strips the BOM Excel adds to "CSV UTF-8" exports (otherwise the
+    # first header reads "﻿from" and the "from" column is never found).
+    text = uploaded_file.getvalue().decode("utf-8-sig", errors="ignore")
     reader = csv.DictReader(io.StringIO(text))
     if not reader.fieldnames:
         raise ValueError("Couldn't read any columns from this CSV.")
-    cols = {c.lower().strip(): c for c in reader.fieldnames}
+    cols = {c.lower().strip(): c for c in reader.fieldnames if c}
 
     def find(*aliases):
         for a in aliases:
@@ -391,7 +319,7 @@ def parse_email_csv(uploaded_file):
     f_from, f_subj, f_body = find("from", "sender", "email"), find("subject", "title"), find("body", "message", "content", "text")
     missing = [n for n, v in [("from", f_from), ("subject", f_subj), ("body", f_body)] if v is None]
     if missing:
-        raise ValueError(f"Missing column(s): {', '.join(missing)}. Found: {', '.join(reader.fieldnames)}")
+        raise ValueError(f"Missing column(s): {', '.join(missing)}. Found: {', '.join(c for c in reader.fieldnames if c)}")
     rows = [{"from": (row.get(f_from) or "").strip(), "subject": (row.get(f_subj) or "").strip(),
              "body": (row.get(f_body) or "").strip()} for row in reader]
     return [r for r in rows if r["subject"] or r["body"]]
@@ -434,42 +362,59 @@ def export_csv_bytes(emails):
 
 
 # ── Render helpers (shared between Compose tab and Dashboard tab) ────────────
+def _txt(value) -> str:
+    """HTML-escape untrusted text (email content / model output) and keep it on one line.
+
+    A blank line inside st.markdown HTML ends the HTML block and the rest of the
+    card would render as a raw-HTML code block, so newlines are collapsed.
+    """
+    return html.escape(" ".join(str(value if value is not None else "").split()))
+
+
 def render_result_card(result):
     a, r = result["analysis"], result["routing"]
-    intent = a.get("intent", "information_request")
+    intent = normalize_intent(a.get("intent"))
+    priority = r.get("priority") if r.get("priority") in PRIORITIES else "none"
+    status = r.get("approval_status") or "—"
+    status_cls = re.sub(r"[^a-z-]", "", status.lower())
     sim_tag = ' <span class="sim-tag">SIMULATED</span>' if result.get("mock") else ""
+    try:
+        confidence = f"{float(a.get('confidence', 0)):.0%}"
+    except (TypeError, ValueError):
+        confidence = "—"
 
-    entities_html = ""
     ents = a.get("key_entities") or []
+    entities_html = ""
     if ents:
-        chips = "".join(f'<span class="entity-chip">{e}</span>' for e in ents[:6])
+        chips = "".join(f'<span class="entity-chip">{_txt(e)}</span>' for e in ents[:6])
         entities_html = f'<div class="entity-row">{chips}</div>'
 
-    st.markdown(f"""
-    <div class="email-card priority-border-{r.get('priority', 'none')}">
-        <div class="card-top">
-            <span class="intent-badge badge-{intent}">{intent.replace('_', ' ')}</span>{sim_tag}
-        </div>
-        <p class="card-row">Sentiment <b>{a.get('sentiment', '—')}</b></p>
-        <p class="card-row">Confidence <b>{a.get('confidence', 0):.0%}</b></p>
-        <p class="card-row">Routes to <b>{r.get('team', '—')}</b></p>
-        <p class="card-row">Priority <span class="priority-{r.get('priority', 'none')}">{r.get('priority', 'none').upper()}</span></p>
-        <p class="card-row">Status <span class="status-{r.get('approval_status', '').replace(' ', '-')}">{r.get('approval_status', '—')}</span></p>
-        {entities_html}
-        <hr class="card-hr">
-        <p class="card-label">Summary</p>
-        <p class="card-summary">{a.get('summary', '—')}</p>
-    </div>""", unsafe_allow_html=True)
+    # Built as a single line on purpose (see _txt).
+    card = "".join([
+        f'<div class="email-card priority-border-{priority}">',
+        f'<div class="card-top"><span class="intent-badge badge-{intent}">{_txt(intent.replace("_", " "))}</span>{sim_tag}</div>',
+        f'<p class="card-row">Sentiment <b>{_txt(a.get("sentiment", "—"))}</b></p>',
+        f'<p class="card-row">Confidence <b>{confidence}</b></p>',
+        f'<p class="card-row">Routes to <b>{_txt(r.get("team", "—"))}</b></p>',
+        f'<p class="card-row">Priority <span class="priority-{priority}">{priority.upper()}</span></p>',
+        f'<p class="card-row">Status <span class="status-{status_cls}">{_txt(status)}</span></p>',
+        entities_html,
+        '<hr class="card-hr">',
+        '<p class="card-label">Summary</p>',
+        f'<p class="card-summary">{_txt(a.get("summary", "—"))}</p>',
+        '</div>',
+    ])
+    st.markdown(card, unsafe_allow_html=True)
 
 
 def render_draft_block(result, context):
     rid = result["id"]
     st.markdown('<p class="card-label" style="margin-top:14px;">Draft reply</p>', unsafe_allow_html=True)
-    st.code(result.get("draft", ""), language=None)
+    st.code(result.get("draft", ""), language=None, wrap_lines=True)
 
     with st.expander("✏️ Edit draft"):
         new_text = st.text_area("Edit", value=result.get("draft", ""), height=160,
-                                 key=f"{context}_ta_{rid}", label_visibility="collapsed")
+                                key=f"{context}_ta_{rid}", label_visibility="collapsed")
         ec1, ec2 = st.columns(2)
         with ec1:
             if st.button("💾 Save edit", key=f"{context}_save_{rid}", width="stretch"):
@@ -484,11 +429,15 @@ def render_draft_block(result, context):
                         result["draft"] = mock_draft_reply(result["email"], result["analysis"])
                     else:
                         oai = make_client(st.session_state.api_key, st.session_state.base_url)
-                        result["draft"] = draft_reply(oai, st.session_state.model, result["email"], result["analysis"])
-                    st.toast("Draft regenerated")
+                        result["draft"] = draft_reply(result["email"], result["analysis"],
+                                                      client=oai, model=st.session_state.model)
                 except Exception as e:  # noqa: BLE001
+                    # Don't rerun here, or the error disappears before anyone can read it.
                     st.error(friendly_error(e))
-                st.rerun()
+                else:
+                    st.session_state.pop(f"{context}_ta_{rid}", None)
+                    st.toast("Draft regenerated")
+                    st.rerun()
 
     status = result["routing"]["approval_status"]
     if status == "pending-human-review":
@@ -507,7 +456,7 @@ def render_draft_block(result, context):
     else:
         st.markdown(
             f'<p style="color:var(--text-dim);font-size:12px;margin-top:8px;">'
-            f'Current status: <span class="status-chip">{status}</span></p>',
+            f'Current status: <span class="status-chip">{_txt(status)}</span></p>',
             unsafe_allow_html=True,
         )
         if st.button("↩️ Send back to review", key=f"{context}_repend_{rid}", width="stretch"):
@@ -531,12 +480,33 @@ def run_batch(emails_list, mock, container):
         prog.progress((i + 1) / len(emails_list))
     status_line.empty()
     if ok:
-        container.success(f"✅ Processed {ok} of {len(emails_list)} email(s).")
+        container.success(f"✅ Processed {ok} of {len(emails_list)} email(s). See them in **📊 Dashboard**.")
         container.balloons()
     if failed:
         with container.expander(f"⚠️ {len(failed)} failed"):
             for subj, msg in failed:
                 st.write(f"**{subj}** — {msg}")
+
+
+def bar_chart(counts: dict, color: str):
+    """Altair bar chart styled from the active theme tokens (st.bar_chart follows
+    Streamlit's base theme only, so its axes were unreadable in light mode)."""
+    t = THEMES[st.session_state.theme]
+    df = pd.DataFrame({"label": [str(k).replace("_", " ") for k in counts], "count": list(counts.values())})
+    chart = (
+        alt.Chart(df)
+        .mark_bar(color=color, cornerRadiusTopLeft=3, cornerRadiusTopRight=3)
+        .encode(
+            x=alt.X("label:N", sort=None, title=None, axis=alt.Axis(labelAngle=-35, labelLimit=110)),
+            y=alt.Y("count:Q", title=None, axis=alt.Axis(tickMinStep=1, format="d")),
+            tooltip=[alt.Tooltip("label:N", title=""), alt.Tooltip("count:Q", title="emails")],
+        )
+        .properties(height=200, width="container", background="transparent")
+        .configure_axis(labelColor=t["text_muted"], gridColor=t["border"], domainColor=t["border"],
+                        tickColor=t["border"], labelFont="sans-serif", labelFontSize=10)
+        .configure_view(strokeWidth=0)
+    )
+    st.altair_chart(chart, theme=None)
 
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -545,6 +515,7 @@ def apply_preset():
     st.session_state.base_url = preset["base_url"]
     if preset["models"]:
         st.session_state.model = preset["models"][0]
+    st.session_state.conn_status = None
 
 
 def fill_sample(sample):
@@ -557,6 +528,14 @@ def clear_form():
     st.session_state.compose_from = ""
     st.session_state.compose_subject = ""
     st.session_state.compose_body = ""
+
+
+def load_txt_body():
+    # Runs as an on_change callback, i.e. before the Body widget is created — assigning
+    # to its key after it's instantiated raises StreamlitAPIException.
+    uploaded = st.session_state.get("compose_file")
+    if uploaded is not None:
+        st.session_state.compose_body = uploaded.getvalue().decode("utf-8-sig", errors="ignore")
 
 
 with st.sidebar:
@@ -575,14 +554,20 @@ with st.sidebar:
                   help="Change to use Groq, OpenRouter, Together, Ollama, etc.")
     st.text_input("Model", key="model", disabled=mock_mode,
                   help="e.g. gpt-4o-mini, llama-3.3-70b-versatile, mistral-7b-instruct")
-    st.text_input("API Key", type="password", key="api_key", placeholder="sk-...", disabled=mock_mode)
+    st.text_input("API Key", type="password", key="api_key", placeholder="sk-...", disabled=mock_mode,
+                  help="Kept only in this browser session's memory — never stored or logged.")
 
     if st.button("🔌 Test connection", width="stretch", disabled=mock_mode):
         try:
             test_client = make_client(st.session_state.api_key, st.session_state.base_url)
-            test_client.chat.completions.create(
-                model=st.session_state.model, max_tokens=5, messages=[{"role": "user", "content": "ping"}],
-            )
+            ping = [{"role": "user", "content": "ping"}]
+            try:
+                test_client.chat.completions.create(model=st.session_state.model, max_tokens=5, messages=ping)
+            except Exception as e:  # noqa: BLE001
+                if "max_tokens" not in str(e):
+                    raise
+                # Reasoning models (o-series, gpt-5…) only accept max_completion_tokens.
+                test_client.chat.completions.create(model=st.session_state.model, max_completion_tokens=16, messages=ping)
             st.session_state.conn_status = ("ok", "✅ Connected — credentials and model look good.")
         except Exception as e:  # noqa: BLE001
             st.session_state.conn_status = ("error", friendly_error(e))
@@ -601,7 +586,7 @@ with st.sidebar:
     if st.session_state.processed_emails:
         st.markdown("---")
         _emails = st.session_state.processed_emails
-        _auto = sum(1 for e in _emails if e["routing"]["auto_approve"])
+        _auto = sum(1 for e in _emails if e["routing"]["approval_status"] == "auto-approved")
         _pending = sum(1 for e in _emails if e["routing"]["approval_status"] == "pending-human-review")
         st.markdown(f"**Processed:** {len(_emails)}  |  **Auto:** {_auto}  |  **Review:** {_pending}")
         with st.popover("🗑️ Clear All", width="stretch"):
@@ -617,15 +602,16 @@ mock_mode = st.session_state.mock_mode
 can_run = mock_mode or bool(st.session_state.api_key)
 
 # ── Header ─────────────────────────────────────────────────────────────────────
-_mode_chip = "🧪 Demo Mode — no API key needed" if mock_mode else f"🟢 {st.session_state.provider_choice} · {st.session_state.model}"
+_mode_chip = ("🧪 Demo Mode — no API key needed" if mock_mode
+              else f"🟢 {st.session_state.provider_choice} · {st.session_state.model}")
 st.markdown(f"""
 <h1 style='font-family:Syne;font-size:2.4rem;font-weight:800;
     background:linear-gradient(135deg,var(--accent1),var(--accent2));
-    -webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:0;'>
+    -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:0;'>
     Autonomous Email Intelligence Agent
 </h1>
 <p style='color:var(--text-dim);margin-top:4px;'>Reads · Detects · Drafts · Routes · Approves — responsibly.
-&nbsp; <span class="status-chip">{_mode_chip}</span></p>
+&nbsp; <span class="status-chip">{_txt(_mode_chip)}</span></p>
 """, unsafe_allow_html=True)
 st.markdown("---")
 
@@ -641,11 +627,7 @@ with tab1:
         subject = st.text_input("Subject", key="compose_subject", placeholder="Email subject…")
         body = st.text_area("Body", key="compose_body", height=180, placeholder="Paste email body here…")
 
-        uploaded_txt = st.file_uploader("Or load a .txt file as the body", type=["txt"], key="compose_file")
-        if uploaded_txt is not None and st.session_state.compose_file_loaded != uploaded_txt.name:
-            st.session_state.compose_body = uploaded_txt.getvalue().decode("utf-8", errors="ignore")
-            st.session_state.compose_file_loaded = uploaded_txt.name
-            st.rerun()
+        st.file_uploader("Or load a .txt file as the body", type=["txt"], key="compose_file", on_change=load_txt_body)
 
         st.markdown("**Quick-fill:**")
         qcols = st.columns(4)
@@ -657,7 +639,7 @@ with tab1:
         bcol1, bcol2 = st.columns([3, 1])
         with bcol1:
             go = st.button("🚀 Process Email", type="primary", width="stretch",
-                            disabled=not (sender and subject and body and can_run))
+                           disabled=not (sender.strip() and subject.strip() and body.strip() and can_run))
         with bcol2:
             st.button("🧹 Clear", width="stretch", on_click=clear_form)
 
@@ -667,7 +649,7 @@ with tab1:
     with col_out:
         st.markdown("### Result")
         if go:
-            email = {"from": sender, "subject": subject, "body": body}
+            email = {"from": sender.strip(), "subject": subject.strip(), "body": body.strip()}
             client_obj = None if mock_mode else make_client(st.session_state.api_key, st.session_state.base_url)
             result, err = process_full(client_obj, st.session_state.model, email, mock=mock_mode, expanded=True)
             if err:
@@ -688,14 +670,16 @@ with tab1:
 # ── Tab 2: Batch processing ───────────────────────────────────────────────────
 with tab2:
     st.markdown("### Batch Processing")
-    source = st.radio("Source", ["Sample batch (4 emails)", "Upload CSV"], horizontal=True, key="batch_source")
+    source = st.radio("Source", [f"Sample batch ({len(SAMPLE_EMAILS)} emails)", "Upload CSV"],
+                      horizontal=True, key="batch_source")
 
     if source.startswith("Sample"):
         for s in SAMPLE_EMAILS:
             with st.expander(f"📧 {s['subject']} — {s['from']}"):
                 st.text(s["body"])
         batch_box = st.container()
-        if st.button("⚡ Process All 4 Emails", type="primary", disabled=not can_run, key="batch_run_sample"):
+        if st.button(f"⚡ Process All {len(SAMPLE_EMAILS)} Emails", type="primary", disabled=not can_run,
+                     key="batch_run_sample"):
             run_batch(SAMPLE_EMAILS, mock_mode, batch_box)
         if not can_run:
             st.caption("Enter an API key in the sidebar, or switch on 🧪 Demo Mode to try this without one.")
@@ -704,12 +688,16 @@ with tab2:
         st.download_button("⬇️ Download CSV template", data=CSV_TEMPLATE, file_name="emails_template.csv", mime="text/csv")
         up = st.file_uploader("Upload CSV", type=["csv"], key="batch_csv")
         if up is not None:
+            parsed, parse_error = [], None
             try:
                 parsed = parse_email_csv(up)
             except ValueError as ve:
-                st.error(str(ve))
-                parsed = []
-            if parsed:
+                parse_error = str(ve)
+            if parse_error:
+                st.error(parse_error)
+            elif not parsed:
+                st.warning("No usable rows found in that file.")
+            else:
                 st.write(f"Parsed **{len(parsed)}** email(s):")
                 st.dataframe(parsed, width="stretch", height=220)
                 batch_box2 = st.container()
@@ -717,8 +705,6 @@ with tab2:
                     run_batch(parsed, mock_mode, batch_box2)
                 if not can_run:
                     st.caption("Enter an API key in the sidebar, or switch on 🧪 Demo Mode to try this without one.")
-            elif up is not None:
-                st.warning("No usable rows found in that file.")
 
 
 # ── Tab 3: Dashboard ───────────────────────────────────────────────────────────
@@ -728,16 +714,18 @@ with tab3:
     if not emails:
         st.info("No emails processed yet — head to **✉️ Compose** or **📦 Batch** to get started.")
     else:
-        auto = sum(1 for e in emails if e["routing"]["auto_approve"])
+        # Counted by current status so the numbers always add up after manual
+        # approve / reject / send-back-to-review actions.
+        auto = sum(1 for e in emails if e["routing"]["approval_status"] == "auto-approved")
         pending = sum(1 for e in emails if e["routing"]["approval_status"] == "pending-human-review")
         urgent = sum(1 for e in emails if e["routing"]["priority"] in ("urgent", "high"))
-        avg_conf = sum(e["analysis"].get("confidence", 0) for e in emails) / len(emails)
+        avg_conf = sum(float(e["analysis"].get("confidence", 0) or 0) for e in emails) / len(emails)
 
         kpis = [
             ("Processed", len(emails), "var(--accent1)"),
-            ("Auto-Approved", auto, "#4ade80"),
-            ("Needs Review", pending, "#fbbf24"),
-            ("High/Urgent", urgent, "#f87171"),
+            ("Auto-Approved", auto, "#22c55e"),
+            ("Needs Review", pending, "#f59e0b"),
+            ("High/Urgent", urgent, "#ef4444"),
             ("Avg. Confidence", f"{avg_conf:.0%}", "var(--accent2)"),
         ]
         kcols = st.columns(5)
@@ -750,16 +738,17 @@ with tab3:
                 )
 
         st.markdown("&nbsp;", unsafe_allow_html=True)
+        _t = THEMES[st.session_state.theme]
         ch1, ch2, ch3 = st.columns(3)
         with ch1:
             st.caption("Intent distribution")
-            st.bar_chart(counts_for(emails, lambda r: r["analysis"].get("intent", "information_request"), INTENT_CATEGORIES.keys()), height=180)
+            bar_chart(counts_for(emails, lambda r: r["analysis"].get("intent", "information_request"), INTENT_CATEGORIES.keys()), _t["accent1"])
         with ch2:
             st.caption("Sentiment")
-            st.bar_chart(counts_for(emails, lambda r: r["analysis"].get("sentiment", "neutral"), ["positive", "neutral", "negative", "urgent"]), height=180)
+            bar_chart(counts_for(emails, lambda r: r["analysis"].get("sentiment", "neutral"), SENTIMENTS), _t["accent2"])
         with ch3:
             st.caption("Priority")
-            st.bar_chart(counts_for(emails, lambda r: r["routing"].get("priority", "none"), ["urgent", "high", "medium", "low", "none"]), height=180)
+            bar_chart(counts_for(emails, lambda r: r["routing"].get("priority", "none"), PRIORITIES), "#f97316")
 
         st.markdown("---")
         with st.expander("🔎 Filter & search", expanded=False):
@@ -769,8 +758,7 @@ with tab3:
             with fc2:
                 f_intent = st.multiselect("Intent", list(INTENT_CATEGORIES), placeholder="Intent", label_visibility="collapsed")
             with fc3:
-                f_status = st.multiselect("Status", ["auto-approved", "pending-human-review", "approved", "rejected"],
-                                           placeholder="Status", label_visibility="collapsed")
+                f_status = st.multiselect("Status", STATUSES, placeholder="Status", label_visibility="collapsed")
             with fc4:
                 sort_by = st.selectbox("Sort", ["Newest first", "Oldest first", "Priority"], label_visibility="collapsed")
 
@@ -786,7 +774,7 @@ with tab3:
             filtered = [r for r in filtered if r["routing"].get("approval_status") in f_status]
 
         if sort_by == "Priority":
-            _order = {"urgent": 0, "high": 1, "medium": 2, "low": 3, "none": 4}
+            _order = {p: i for i, p in enumerate(PRIORITIES)}
             filtered = sorted(filtered, key=lambda r: _order.get(r["routing"].get("priority", "none"), 9))
         elif sort_by == "Newest first":
             filtered = list(reversed(filtered))
@@ -807,10 +795,10 @@ with tab3:
                 st.rerun()
         with bc3:
             st.download_button("⬇️ Export JSON", data=export_json_bytes(emails), file_name="processed_emails.json",
-                                mime="application/json", width="stretch")
+                               mime="application/json", width="stretch")
         with bc4:
             st.download_button("⬇️ Export CSV", data=export_csv_bytes(emails), file_name="processed_emails.csv",
-                                mime="text/csv", width="stretch")
+                               mime="text/csv", width="stretch")
 
         st.caption(f"Showing {len(filtered)} of {len(emails)} email(s)")
         status_icon = {"pending-human-review": "🟡", "auto-approved": "🟢", "approved": "✅", "rejected": "❌"}
@@ -824,16 +812,18 @@ with tab3:
                     render_result_card(result)
                 with cdb:
                     render_draft_block(result, context="dash")
-                    rerun_disabled = not can_run
-                    if st.button("🔁 Re-run analysis", key=f"dash_rerun_{result['id']}", width="stretch", disabled=rerun_disabled):
+                    if st.button("🔁 Re-run analysis", key=f"dash_rerun_{result['id']}", width="stretch", disabled=not can_run):
                         cobj = None if mock_mode else make_client(st.session_state.api_key, st.session_state.base_url)
                         new_result, err = process_full(cobj, st.session_state.model, email, mock=mock_mode, expanded=False)
                         if err:
+                            # No rerun on failure, so the message stays visible.
                             st.error(friendly_error(err))
                         else:
                             result["analysis"] = new_result["analysis"]
                             result["draft"] = new_result["draft"]
                             result["routing"] = new_result["routing"]
                             result["mock"] = mock_mode
+                            st.session_state.pop(f"dash_ta_{result['id']}", None)
+                            st.session_state.pop(f"compose_ta_{result['id']}", None)
                             st.toast("Re-analyzed")
-                        st.rerun()
+                            st.rerun()

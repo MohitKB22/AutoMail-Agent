@@ -1,0 +1,15 @@
+# Streamlit's native theme matches the app's dark design tokens (app.py → THEMES["dark"]).
+# Without this, visitors whose OS is in light mode got dark text on the app's
+# near-black background. The in-app "Light mode" toggle re-skins widgets via CSS.
+[theme]
+base = "dark"
+primaryColor = "#818cf8"
+backgroundColor = "#0a0a0f"
+secondaryBackgroundColor = "#111118"
+textColor = "#e5e7eb"
+
+[server]
+headless = true
+
+[browser]
+gatherUsageStats = false
